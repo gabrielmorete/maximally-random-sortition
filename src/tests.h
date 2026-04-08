@@ -70,7 +70,7 @@ void runTests(){
 
 	const std::vector<std::string> datasetNames ={
 		// "simple_ABC_2", "infeasible_ABC_2", "full_ABC_4", 
-		"sf_b_20", "mass_24", "hd_30", "obf_30", "sf_a_35", "sf_d_40",
+		"sf_b_20", "mass_a_24", "hd_30", "obf_30", "sf_a_35", "sf_d_40",
 		"sf_c_44", "cca_75", "sf_e_110"
 	};
 
@@ -202,7 +202,7 @@ void runTests(){
 	std::cout << BLUE << "\n--- Testing Sampling Accuracy ---" << WHITE << std::endl;
 
 	const std::vector<std::string> samplingDatasetNames = {//"simple_ABC_2", "ABC_2", "full_ABC_4", 
-															"mass_24"};
+															"mass_a_24"};
 	const std::vector<int> samplingPanelSizes = {//2, 2, 4, 
 												24};
 	const long long nPanelsSampling = 200'000; // Number of panels for comparison
@@ -303,7 +303,7 @@ void runBenchmark(){
 
 
 	const std::vector<std::string> datasetNames ={
-		"sf_b_20", "mass_24",  "sf_a_35", "sf_d_40", "sf_c_44",
+		"sf_b_20", "mass_a_24",  "sf_a_35", "sf_d_40", "sf_c_44",
 	};
 
 	const std::vector<int> panelSizes ={

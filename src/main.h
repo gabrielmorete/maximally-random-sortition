@@ -81,6 +81,9 @@ bool __verbose_mode = 0;
 /** @brief If true, enables printing detailed diagnostic information. */
 bool __test_mode = 0;
 
+/** @brief Structures output to be used with the vizualization tool at panelot */
+bool __panelot_output = 0;
+
 /**
  * DP constants
  * */
@@ -110,8 +113,18 @@ atomic<bool> __DPFinished(false);
  * */
 
 
+/** Global counter with the number of panels found. */
+long long __nPanelsPrinted = 0;
+
+
 /** @brief Default number of samples used in tests to estimate marginal probabilities. */
 const int __nSamples = 10'000;
+
+/** @brief Flush local sampling statistics every this many tries. */
+static constexpr long long __sampling_update_tries = 100'000;
+
+/** @brief Minimum time between non-final sampling-info prints. */
+static constexpr int __sampling_update_seconds = 2;
 
 /** @brief Number of parallel threads to use (e.g., for OpenMP sections). */
 int __num_threads = 1;

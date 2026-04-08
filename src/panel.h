@@ -348,6 +348,7 @@ public:
 				DPState iniState;
 				iniState.tupleId = 0;
 				iniState.v0 = 0;
+				iniState.sz = 0;
 				iniState.numFeat = numActiveFeat;
 
 				// Notice that hashed masks are shifted (maskIds[0] is for feature activeFeat_[1])
@@ -808,15 +809,15 @@ public:
 
 			auto tupleId = state.tupleId;
 			int frqV0 = state.v0;
+			int sz = state.sz;
 			int numActiveFeat = state.numFeat;
 
 			vector<FeatureMask> mskV(numActiveFeat); // mskV[0] is not used.
 			for (int i = 1; i < numActiveFeat; i++)
 				mskV[i] = getMskFromId(i, state.maskIds[i - 1]);
 			
-			int sz = mskV[1].getSz(); // Current number of people in the partial panel.
-
-			FeatVec &featVal = valsTuple[tupleId]; // Values for the current tuple.
+			if (numActiveFeat > 1)
+				assert(sz == mskV[1].getSz()); // Current number of people in the partial panel.
 
 			// assert(sz <= panSize); // Sanity check
 			// for (int i = 1; i < numActiveFeat; i++)
@@ -832,6 +833,8 @@ public:
 				feasibleState[stateId] = 0;
 				return 0;
 			}
+
+			FeatVec &featVal = valsTuple[tupleId]; // Values for the current tuple.
 
 			// Panel is full. Check if quotas are met.
 			if (sz == panSize){
@@ -869,7 +872,7 @@ public:
 				Check if the state restricted to a prefix of features is feasible
 				If not, the corrent one also isnt
 			*/
-			if (lookup == false)
+			if (lookup == false and numActiveFeat > 2)
 				if (auto parent = prefDP.lock()){
 					FeatVec prefVal = featVal;
 					vector<FeatureMask> prefMsk = mskV;
@@ -878,7 +881,7 @@ public:
 						prefMsk.pop_back();
 					}
 
-					bool prefMemo = parent->stateLookup(prefVal, frqV0, prefMsk);
+					bool prefMemo = parent->stateLookup(prefVal, frqV0, sz, prefMsk);
 					if (prefMemo == 0){
 						feasibleState[stateId] = 0;
 						return 0;
@@ -933,12 +936,12 @@ public:
 
 			// Iterate over all possible numbers of respondents `f` to take from this tuple.
 			for (long long f = maxSz; f >= 0; f--){
-
 				bool aux = 0;
 
 				// Construct the next state.
 				nxtState.tupleId = tupleId + 1;
 				nxtState.v0 = freqVal[0] + f;
+				nxtState.sz = sz + f;
 
 				for (int i = 1; i < numActiveFeat; i++){
 					FeatureMask nxtMsk = mskV[i]; // Copy current mask
@@ -998,7 +1001,7 @@ public:
 		 * @param mskV The vector of `FeatureMask` objects for the state.
 		 * @return `true` if the state has a count > 0, `false` otherwise.
 		 */
-		bool stateLookup(FeatVec &featVal, int frqV0, vector<FeatureMask> &mskV){
+		bool stateLookup(FeatVec &featVal, int frqV0, int sz, vector<FeatureMask> &mskV){
 
 			int tId = tupleToId[featVal];
 
@@ -1008,6 +1011,7 @@ public:
 			DPState state;
 			state.tupleId = tId;
 			state.v0 = frqV0;
+			state.sz = sz;
 			state.numFeat = mskV.size();
 			for (int i = 1; i < mskV.size(); i++){
 				state.maskIds[i - 1] = getIdFromMsk(mskV[i]);
@@ -1018,7 +1022,7 @@ public:
 
 			// return 1;
 
-			return findStatesDP(getIdFromState(state), true) > 0;
+			return findStatesDP(getIdFromState(state, true), true) > 0;
 		}		
 
 		
@@ -1327,20 +1331,6 @@ class Panel {
 			weights.resize(data.getRespondents().size(), 1);
 		}
 
-		/**
-		 * @brief Prints a panel's respondent IDs to std::cout in sorted order.
-		 *
-		 * @param panel The panel to be printed, represented as a
-		 * std::vector of respondent IDs.
-		 */
-		void printPanel(vector<int> panel){
-			sort(panel.begin(), panel.end());
-
-			for (int &x : panel)
-				cout << x << ' ';
-			cout << endl;
-		}
-
 		
 		/** @brief Clears all cached DP results. */
 		void clear(){ countSets.clear(); }
@@ -1363,11 +1353,13 @@ class Panel {
 
 			if (reCountSets.get() != nullptr){
 				cerr << PURPLE << "Attention:" << WHITE << " counting non-standard weights needs to be done though reweighting. ";
-				// assert(0);
 			}
-	
-			// Base case: no prefix or not progressive
-			if (!progressive || features.size() == 2) {
+
+			if (features.empty())
+				throw std::runtime_error("Cannot count an empty feature set.");
+
+			// Base case: direct build
+			if (!progressive || features.size() == 1) {
 				auto [it, inserted] = countSets.try_emplace(
 					features,
 					make_shared<CountSets>(data, weights, features, nullptr)
@@ -1377,18 +1369,16 @@ class Panel {
 				return it->second->getAllSets();
 			}
 			
-			// Progressive case: Build DPs for prefixes first.
-			vector<int> prefCat = {features[0], features[1]};
+			// Progressive case: start from the first singleton.
+			vector<int> prefCat = {features[0]};
 			shared_ptr<CountSets> prevPtr;
 			
-			// First DP for the smallest prefix.
 			auto [firstIt, _] = countSets.try_emplace(
 				prefCat,
 				make_shared<CountSets>(data, weights, prefCat, nullptr)
 			);
 			prevPtr = firstIt->second;
-			
-			// Subsequent DPs, using the previous as a parent/heuristic.
+
 			while (prefCat.size() < features.size()) {
 				prefCat.push_back(features[prefCat.size()]);
 				auto [newIt, __] = countSets.try_emplace(
@@ -1399,7 +1389,6 @@ class Panel {
 			}
 
 			prevPtr->computeWeightedComb();
-
 			return prevPtr->getAllSets();
 		}
 
@@ -1652,9 +1641,15 @@ class Panel {
 		vector<vector<long long>> __val_sat; // __val_sat[f][v] = #tries value (f,v) satisfied
 
 
+		/*
+			This tracks the which features prune panels
+		*/
+		vector<long long> __panels_pruned;
 
 
 
+		/** Next time a non-final sampling info print is allowed. */
+		chrono::steady_clock::time_point nextSamplingInfoPrint;
 
 		/**
 		* @brief Implementation of the weighted sampling algorithm.
@@ -1747,6 +1742,7 @@ class Panel {
 			for (int f = 0; f < data.getTotFeature(); f++) 
 				__val_sat[f].assign(data.getFeatSize()[f], 0);
 
+			__panels_pruned.assign(data.getTotFeature(), 0);
 
 
 			bool abortSearch = false; // Flag to stop all threads
@@ -1757,6 +1753,9 @@ class Panel {
 			atomic<long long> nPanelsFound(0);
 			vector< vector<int> > retPanels;
 
+
+			nextSamplingInfoPrint =
+				chrono::steady_clock::now() + chrono::seconds(__sampling_update_seconds);
 
 			#pragma omp parallel num_threads(__num_threads) \
 			shared(dp, __number_of_tries, respPerTuple, __totalSample, abortSearch)
@@ -1778,8 +1777,8 @@ class Panel {
 				int curPos = 0;
 
 				vector< vector<int> > panValues(data.getTotFeature());
-				for (int i = 0; i < data.getTotFeature(); i++)
-					panValues[i].assign(data.getFeatSize()[i], 0);
+				for (int f = 0; f < data.getTotFeature(); f++)
+					panValues[f].assign(data.getFeatSize()[f], 0);
 
 
 
@@ -1790,30 +1789,33 @@ class Panel {
 				for (int f = 0; f < data.getTotFeature(); f++) 
 					localValSat[f].assign(data.getFeatSize()[f], 0);
 
+				vector<long long> localPanelsPrunned(data.getTotFeature(), 0);
+
+
 
 				// Vector to sample indexes from
 				vector<int> indices(data.getRespondents().size());
 
 				do{
 					localTries++;
-					if (localTries % 100'000 == 0){ // update global counter
+					if (localTries % __sampling_update_tries == 0){ // update global counters periodically
 
+						updateSamplingStatistics(localTries, localPanelsPrunned);
 
-						#pragma omp atomic update
-							__number_of_tries += localTries;
-
-						localTries = 0;	
-						if (__test_mode and __number_of_tries % 10'000'000 == 0)
-							cerr << BLUE << "current # of samples: " << WHITE << __number_of_tries << endl;
+						if (__test_mode || __panelot_output){
+							#pragma omp critical
+							{
+								printSamplingInfo(dp, 0, 0);
+							}
+						}
 
 						if (maxSamples > 0 and __number_of_tries > maxSamples) // Exceeded number of tries
 							abortSearch = 1;
-
 					}
 
 
-					for (int i = 0; i < data.getTotFeature(); i++){
-						fill(panValues[i].begin(), panValues[i].end(), 0);
+					for (int f = 0; f < data.getTotFeature(); f++){
+						fill(panValues[f].begin(), panValues[f].end(), 0);
 					}
 					
 					curPos = 0;
@@ -1858,16 +1860,18 @@ class Panel {
 								panel[curPos++] = rId;
 							
 								for (int j = 0; j < data.getTotFeature(); j++){
-									int featId = data.getRespondents()[rId][j];
-									panValues[j][featId]++;
+									int valueID = data.getRespondents()[rId][j];
+									panValues[j][valueID]++;
 									
 
 									/*
 										Enable early prunning
 									*/
 									if constexpr (pruneSearch){
-										if (data.getMaxVal()[j][featId] < panValues[j][featId])
+										if (data.getMaxVal()[j][valueID] < panValues[j][valueID] and feasiblePanel){
 											feasiblePanel = 0;
+											localPanelsPrunned[j]++;
+										}
 									}
 								}
 							}
@@ -1878,12 +1882,6 @@ class Panel {
 
 					if (!feasiblePanel)
 						continue;
-
-
-					// Computes feature satisfaction prob
-					for (int i = 0; i < data.getTotFeature(); i++){
-
-					}	
 
 
 					// Check if the generated panel satisfies all feature quotas.
@@ -1902,6 +1900,11 @@ class Panel {
 							localValSat[f][v] += value_sat;
 						}
 
+						if (feature_sat == 0 and feasiblePanel == 1){
+							localPanelsPrunned[f]++;
+							feasiblePanel = 0;
+						}
+
 
 						numSatisfied += feature_sat;
 						localFeatSat[f] += feature_sat;
@@ -1916,19 +1919,15 @@ class Panel {
 						int curTotPanels = nPanelsFound.fetch_add(1, std::memory_order_relaxed);
 						if (curTotPanels < nPanels){
 
-							if (__test_mode and curTotPanels and curTotPanels % 1'000 == 0)
-								cerr << BLUE << "Current # of panels: " << WHITE << curTotPanels << endl;
-
 							localPanels.push_back(panel);
+							
+							updateSamplingStatistics(localTries, localPanelsPrunned);
+
 							#pragma omp critical
 							{
-								sort(panel.begin(), panel.end());
-								for (int i = 0; i < panel.size(); i++){
-									if (i + 1 < panSize)
-										cout << panel[i] << ",";
-									else
-										cout << panel[i] << endl;
-								}
+								printPanel(panel);
+								if (__panelot_output)
+									printSamplingInfo(dp, 0, 1);
 							}
 								
 							if (curTotPanels == nPanels - 1)
@@ -1944,8 +1943,8 @@ class Panel {
 				*/
 				#pragma omp critical
 				{
+					updateSamplingStatistics(localTries, localPanelsPrunned);
 
-					__number_of_tries += localTries;
 					for (int f = 0; f < data.getTotFeature(); f++){
 						__feat_sat[f] += localFeatSat[f];
 						for (int v = 0; v < data.getFeatSize()[f]; v++)
@@ -1962,10 +1961,28 @@ class Panel {
 
 
 			if (__test_mode)
-				cerr << BLUE << "Total number of samples: " << WHITE << __number_of_tries << endl;
+				printSamplingInfo(dp, 1, 1);
 
 			return retPanels;
 		}
+
+
+		void updateSamplingStatistics(long long &localTries, vector<long long> &localPanelsPrunned){
+			#pragma omp atomic update
+				__number_of_tries += localTries;
+
+			localTries = 0;	
+
+			for (int f = 0; f < data.getTotFeature(); f++){
+				#pragma omp atomic update
+					__panels_pruned[f] += localPanelsPrunned[f];
+				localPanelsPrunned[f] = 0;	
+			}
+		}
+
+
+
+
 
 		/**
 		 * @brief Applies new weights and re-computes the DP solution.
@@ -2338,9 +2355,9 @@ class Panel {
 			vector<int> order = chooseInitialOrder(processedData);
 
 			if (__verbose_mode){
-			    cerr << YELLOW << "Initial order: " << WHITE;
-			    for (int f : order) cerr << (char)('a' + f) << " ";
-			    cerr << endl;
+				cerr << YELLOW << "Initial order: " << WHITE;
+				for (int f : order) cerr << (char)('a' + f) << " ";
+				cerr << endl;
 			}
 
 
@@ -2350,100 +2367,61 @@ class Panel {
 			vector<int> blocked(m, 0);
 
 
-			// Choose initial pair of features to add to the DP
-			{
-				
-				for (int i = 0; i < m && !lastSuccessfulDP; i++){
-					for (int j = i + 1; j < m && !lastSuccessfulDP; j++){
-
-       					activeFeat = {order[i], order[j]};
-
-						__DPFinished = false;
-						__stopDPTimeout = false;
-						thread watchdog(runWatchdog, timeOut);
-
-						try {
-							lastSuccessfulDP = make_shared<CountSets>(processedData, weights, activeFeat, nullptr);
-							lastSuccessfulDP->computeWeightedComb();
-						} 
-						catch (const DpTimeoutException& e){
-							if (__verbose_mode)
-								cerr << YELLOW << "Timeout: " << WHITE << "Could not add initial pair within " << timeOut << " minute(s)." << endl;
-						} catch (const DpStateException& e){
-							if (__verbose_mode)
-								cerr << YELLOW << "Limits: " << WHITE << "Could not add initial pairs within the required number of states." << endl;
-						} catch (const std::bad_alloc& e){
-							if (__verbose_mode)
-								cerr << RED << "Out of Memory: " << WHITE << "Failed to allocate memory for the initial pair." << endl;
-						} catch (const std::exception& e){
-							if (__verbose_mode)
-								cerr << RED << "Exception: " << WHITE << e.what() << " while adding initial pair." << endl;
-						} catch (...){
-							if (__verbose_mode)
-								cerr << RED << "Unknown exception: " << WHITE " while adding initial pair." << endl;	
-						}
-
-						__DPFinished = true;
-						watchdog.join();
-
-						if (!lastSuccessfulDP)
-							blocked[ order[j] ] = 1;
-					}
-
-					if (!lastSuccessfulDP){
-						blocked[ order[i] ] = 1;
-						for (int k = i + 1; k < m; k++)
-							blocked[ order[k] ] = 0;
-					}
-				}	
-			}
-
-			if (!lastSuccessfulDP) {
-				cerr << RED << "Error:" << WHITE << "Could not find a feasible initial pair of features." << endl;
-				exit(1);
-			}
-
-			if (__verbose_mode) {
-				cerr << YELLOW << "\tNumber of valid panels: " << WHITE
-					 << lastSuccessfulDP->getAllSets() << endl << endl;
-			}
+			
 
 
 			while (activeFeat.size() < __maxFeatures){
 
-				// Feature prediction and early drop
-				const long diagPanels = 10;
-				const long long diagMaxSamples = 100'000;
-				const long double easyAvgTries = 5000.0L;  // max tries per panel
+				if (lastSuccessfulDP != nullptr) {
+					// Feature prediction and early drop
+					const long diagPanels = 10;
+					const long long diagMaxSamples = 100'000;
+					const long double easyAvgTries = 10'000.0L;  // max tries per panel
 
-				if (__test_mode)
-					cerr << BLUE << "Computing current satisfaction probabilities." << WHITE << endl;
+					if (__test_mode)
+						cerr << BLUE << "Computing current satisfaction probabilities." << WHITE << endl;
 
-				auto panels = samplingAlgorithm<false, false>(lastSuccessfulDP, diagPanels, diagMaxSamples);
+					auto panels = samplingAlgorithm<false, false>(lastSuccessfulDP, diagPanels, diagMaxSamples);
 
-				if (__test_mode)
-					cerr << BLUE << "Number of successful samples: " << WHITE << panels.size() << endl;
+					// if (__test_mode)
+					// 	cerr << BLUE << "Number of successful samples: " << WHITE << panels.size() << endl;
 
-				if (__verbose_mode)
-					printSelectionProbTable("Current Satisfaction Probabilities", &activeFeat);
+					if (__verbose_mode)
+						printSelectionProbTable("Current Satisfaction Probabilities", &activeFeat);
 
-				// Early stop, if we can sample, lets sample
-				if ((long)panels.size() == diagPanels){
-					long double avgTries = (long double)__number_of_tries / (long double)diagPanels;
-					if (__verbose_mode) {
-						cerr << YELLOW << "Diagnostics avg tries/panel: " << WHITE
-							 << (double)avgTries << endl;
+					// Early stop, if we can sample, lets sample
+					if ((long)panels.size() == diagPanels){
+						long double avgTries = (long double)__number_of_tries / (long double)diagPanels;
+						if (__verbose_mode) {
+							cerr << YELLOW << "Diagnostics avg tries/panel: " << WHITE
+								 << (double)avgTries << endl;
+						}
+						if (avgTries <= easyAvgTries){
+							if (__verbose_mode)
+								cerr << YELLOW << "Sampling is already easy; stopping DP growth." << WHITE << endl;
+							break;
+						}
 					}
-					if (avgTries <= easyAvgTries){
-						if (__verbose_mode)
-							cerr << YELLOW << "Sampling is already easy; stopping DP growth." << WHITE << endl;
-						break;
+				}		
+
+
+				// Get next feature
+				int next = -1;
+
+				if (activeFeat.empty()){
+					for (int f : order){
+						if (!blocked[f]){
+							next = f;
+							break;
+						}
 					}
-				}	
+				}
+				else{
+					next = getNextFeature(activeFeat, blocked);
+				}
 
-
-				int next = getNextFeature(activeFeat, blocked);
-				if (next < 0) break;
+				if (next < 0)
+					break;
 
 
 				while (next >= 0 && (int)activeFeat.size() < __maxFeatures){
@@ -2461,10 +2439,7 @@ class Panel {
 					thread watchdog(runWatchdog, timeOut);
 					try {
 
-						if (lastSuccessfulDP == nullptr)
-							nextDP = make_shared<CountSets>(processedData, weights, nxtFeatures, nullptr);
-						else
-							nextDP = make_shared<CountSets>(processedData, weights, nxtFeatures, lastSuccessfulDP);
+						nextDP = make_shared<CountSets>(processedData, weights, nxtFeatures, lastSuccessfulDP);
 
 						success = true;
 
@@ -2594,6 +2569,167 @@ class Panel {
 			}
 
 			return respFreq;
+		}
+
+		/**
+		 * @brief Prints a panel's respondent IDs to std::cout in sorted order.
+		 *
+		 * @param panel The panel to be printed, represented as a
+		 * std::vector of respondent IDs.
+		 */
+
+		void printPanel(vector<int> &panel){
+			__nPanelsPrinted++;
+			sort(panel.begin(), panel.end());
+
+			ostream &out = __panelot_output ? cerr : cout;
+			if (__panelot_output) out << "\nPanel: ";
+
+			for (int i = 0; i < panel.size(); i++){
+				if (i + 1 < panSize)
+					out << panel[i] << ",";
+				else
+					out << panel[i] << endl;
+			}
+		}
+
+		/**
+		 * @brief Prints a formatted summary of the Phase 2 Rejection Funnel.
+		 * 
+		 * Hides DP-enforced features into a single "Base DP" column, and then 
+		 * sequentially displays the survival probability (in scientific notation) 
+		 * and estimated valid panels as each remaining feature is applied.
+		 */
+		void printSamplingInfo(const shared_ptr<CountSets> &dp, bool final, bool force){
+			if (__number_of_tries <= 0) // Should not happen
+				return;
+
+			if (!final && !force){
+				auto now = chrono::steady_clock::now();
+				if (now < nextSamplingInfoPrint)
+					return;
+
+				nextSamplingInfoPrint =
+					now + chrono::seconds(__sampling_update_seconds);
+			}
+
+			double survivalRate = ((double)__nPanelsPrinted / __number_of_tries) * 100.0;
+					
+			ios_base::fmtflags f(cerr.flags());
+
+			if (final)
+				cerr << BLUE << "\n--- Final Rejaction Sampling Info ---" << WHITE << endl;
+			else	
+				cerr << BLUE << "\n--- Rejaction Sampling Info ---" << WHITE << endl;
+			
+			cerr << BLUE << "current # of panels: " << WHITE << __nPanelsPrinted 
+				 << " (" << scientific << setprecision(2) << survivalRate << "%)" << endl;
+			cerr.flags(f);
+
+			cerr << BLUE << "current # of samples: " << WHITE << __number_of_tries << endl;
+
+			// 1. Identify DP vs Non-DP features
+			vector<int> activeFeat = dp->getActiveFeat();
+			vector<bool> isDP(data.getTotFeature(), false);
+			
+			sort(activeFeat.begin(), activeFeat.end());
+			string dpFeatStr = "";
+			for (size_t i = 0; i < activeFeat.size(); i++) {
+				isDP[activeFeat[i]] = true;
+				dpFeatStr += string(1, 'a' + activeFeat[i]);
+				if (i < activeFeat.size() - 1) dpFeatStr += ", ";
+			}
+			
+			// Gather the remaining (Phase 2) features in checking order
+			vector<int> remFeat;
+			for (int i = 0; i < data.getTotFeature(); i++) {
+				if (!isDP[i]) {
+					remFeat.push_back(i);
+				}
+			}
+
+			// Format column widths dynamically based on the DP string length
+			int dpColW = max(14, (int)dpFeatStr.length() + 2);
+			const int colW = 10;
+
+			// --- Print Row 1: Headers ---
+			cerr << setw(12) << right << "Feature" << " |";
+			cerr << setw(dpColW) << right << dpFeatStr << " |";
+			for (int f : remFeat) {
+				cerr << setw(colW) << right << ("+" + string(1, 'a' + f)) << " |";
+			}
+			cerr << endl;
+
+			// --- Print Row 2: Satisfaction Probability ---
+			cerr << setw(12) << right << "Sat Prob" << " |";
+			
+			// Print base probability in scientific notation (1.00e+00)
+			stringstream ssBaseProb;
+			ssBaseProb << scientific << setprecision(2) << 1.0;
+			cerr << setw(dpColW) << right << ssBaseProb.str() << " |";
+			
+			long long survivors = __number_of_tries;
+			vector<double> probs;
+			for (int f : remFeat) {
+				// Subtract the panels that died EXACTLY at this feature
+				survivors -= __panels_pruned[f];
+				if (survivors < 0) survivors = 0; // Safety clamp
+				
+				double prob = 0.0;
+				if (__number_of_tries > 0) {
+					prob = (double)survivors / __number_of_tries; // Raw probability [0.0, 1.0]
+				}
+				probs.push_back(prob);
+				
+				stringstream ss;
+				if (prob > 0) {
+					ss << scientific << setprecision(2) << prob;
+				} else {
+					ss << "0.00e+00";
+				}
+				cerr << setw(colW) << right << ss.str() << " |";
+			}
+			cerr << endl;
+
+			// --- Print Row 3: Estimated Panels ---
+			cerr << setw(12) << right << "Est Panels" << " |";
+			double base_panels = (double)dp->getAllSets();
+			
+			stringstream ssBase;
+			ssBase << scientific << setprecision(1) << base_panels;
+			cerr << setw(dpColW) << right << ssBase.str() << " |";
+
+			for (double p : probs) {
+				// We no longer divide by 100.0 because `p` is already a fraction
+				double est = p * base_panels; 
+				stringstream ss;
+				if (est > 0) {
+					ss << scientific << setprecision(1) << est;
+				} else {
+					ss << "0";
+				}
+				cerr << setw(colW) << right << ss.str() << " |";
+			}
+			cerr << endl;
+
+			// --- Print Row 4: Attempts surviving each step ---
+			cerr << setw(12) << right << "Attempts" << " |";
+
+			// Base DP column: all attempts survive
+			stringstream ssBaseAttempts;
+			ssBaseAttempts << __number_of_tries;
+			cerr << setw(dpColW) << right << ssBaseAttempts.str() << " |";
+
+			long long attSurvivors = __number_of_tries;
+			for (int f : remFeat) {
+				attSurvivors -= __panels_pruned[f];
+				if (attSurvivors < 0) attSurvivors = 0;
+				
+				stringstream ss;
+				ss << attSurvivors;
+				cerr << setw(colW) << right << ss.str() << " |";
+			}
+			cerr << endl;
 		}
 
 		/** @brief Gets the total number of respondents loaded. */

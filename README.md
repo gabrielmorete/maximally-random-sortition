@@ -1,7 +1,10 @@
 # Uniform Sortition
 
-A tool for selecting panels uniformly from a pool of respondents.
-Written in C++20.
+A tool for sampling panels with as much randomness as possible by either sampling uniformly across all valid panels or by optimizing target selection probabilities. 
+Written in C++20 using boost.
+
+You can find more details in the following [paper](https://arxiv.org/abs/2604.02712).
+
 ---
 
 ### Compilation
@@ -10,7 +13,6 @@ To compile:
 
 ```bash
 $ make main
-```
 
 ### Basic Usage
 
@@ -23,7 +25,7 @@ $ ./main -path <data_dir> -size <n> [options]
 Example:
 
 ```bash
-$ ./main -size 30 -path data_panelot/pool_30/ -sample 100 -verbose -threads 5
+$ ./main -size 30 -path data/pool_30/ -sample 100 -verbose -threads 5
 ```
 
 -----
@@ -73,9 +75,11 @@ Finds a set of respondent weights such that the weighted sampling distribution m
 ### Configuration & Tuning
 
     `-threads <n>`
-            Number of threads to use for parallel sampling and graph construction (OpenMP). Default is 1.
+        Number of threads to use for parallel sampling and graph construction (OpenMP). Default is 1.
     `-preprocess <threshold>`
             Enables data preprocessing.
+    `-seed <n>`
+            Fixes the random number generator seed for deterministic and reproducible runs.
 
 ### Testing & Benchmarking
 
@@ -83,6 +87,10 @@ Finds a set of respondent weights such that the weighted sampling distribution m
             Prints extra information to `stderr`.
     `-test`
             Prints detailed execution logs to `stderr`.
+    `-runTests`
+            Runs a built-in suite of correctness tests against known datasets to verify the DP counting logic.
+    `-runBenchmark`
+            Runs performance benchmarks on a set of standard datasets, measuring DP setup time and sampling throughput.
 
 -----
 

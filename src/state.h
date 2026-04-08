@@ -22,6 +22,9 @@ struct DPState{
 
 	/** @brief Current count specifically for the primary feature's (feature 0) active value. */
 	uint16_t v0;
+
+	/** @brief Total number of respondents already selected in the partial panel. */
+	uint16_t sz;
 	
 	/** @brief Number of active features in this state*/
 	uint8_t numFeat; // Number of active features in this state.
@@ -34,28 +37,32 @@ struct DPState{
 	uint32_t maskIds[__maxFeatures - 1]; // Value 0 does not have a hash
 	
 	// Constructor
-	DPState() : tupleId(-1), v0(0), numFeat(0){
+	DPState() : tupleId(-1), v0(0), sz(0), numFeat(0){
 		memset(maskIds, 0, sizeof(maskIds));
 	}
 
 	bool operator==(const DPState& other) const {
-		if (tupleId != other.tupleId || v0 != other.v0 || numFeat != other.numFeat)
+		if (tupleId != other.tupleId || v0 != other.v0  || sz != other.sz || numFeat != other.numFeat)
 			return false;
 		
 
-		if (numFeat == 0)
+		if (numFeat <= 1)
 			return true;
 
 		// Since we store the masks in a C-style array, we can use memcomp
-		return memcmp(maskIds, other.maskIds, sizeof(uint32_t) * numFeat) == 0;
+		return memcmp(maskIds, other.maskIds, sizeof(uint32_t) * (numFeat - 1)) == 0;
 	}
 
 	// To use with std::map
 	bool operator<(const DPState& other) const {
 		if (tupleId != other.tupleId)
 			return tupleId < other.tupleId;
+
 		if (v0 != other.v0)
 			return v0 < other.v0;
+		
+		if (sz != other.sz)
+			return sz < other.sz;
 
 		// If the above are equal, compare the mask arrays
 		return std::lexicographical_compare(
@@ -74,8 +81,9 @@ namespace boost {
 
 			hash_combine(seed, s.tupleId);
 			hash_combine(seed, s.v0);
+			hash_combine(seed, s.sz);
 			hash_combine(seed, s.numFeat);
-			hash_combine(seed, boost::hash_range(s.maskIds, s.maskIds + s.numFeat));
+			hash_combine(seed, boost::hash_range(s.maskIds, s.maskIds + s.numFeat - 1));
 
 			return seed;
 		}

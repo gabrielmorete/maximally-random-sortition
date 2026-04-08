@@ -104,11 +104,13 @@ void printUsage(){
 			  << "Options:\n"
 			  << "  -path <path>    : Path to data directory (must contain categories.csv and respondents.csv)\n"
 			  << "  -size <n>       : Target panel size (required)\n"
+			  << "  -seed <n>       : Fix the random seed\n"
 			  << "  -sample <n>     : Number of panels to sample\n"
 			  << "  -count <f1 f2>  : Count valid panels for specific features (e.g. -count a b)\n"
 			  << "  -threads <n>    : Number of threads (default: 1)\n"
 			  << "  -preprocess <t> : Enable preprocessing with threshold t\n"
 			  << "  -tDist <file>   : Target distribution file\n"
+			  << "  -panelot        : Structures output for panelot\n"
 			  << "  -test           : Enable test mode\n"
 			  << "  -verbose        : Enable verbose output\n"
 			  << "  -runTests       : Run internal code tests\n"
@@ -129,6 +131,9 @@ signed main(int argc, char *argv[]){
 
 	if (input.cmdOptionExists("-test"))
 		__test_mode = true;
+
+	if (input.cmdOptionExists("-panelot"))
+		__panelot_output = true;
 	
 	string threadStr = input.getCmdOption("-threads");
 	if (!threadStr.empty()){
@@ -143,16 +148,30 @@ signed main(int argc, char *argv[]){
 		}
 	}
 
-	// Now, seed one rng for each thread
+	/*
+	 * Create an array of RNG for all threads. It defaults to a time-based 
+	 * seed, but allows the user to enforce a seed via the "-seed" flag.
+	 */
+
+	uint64_t base_seed = (uint64_t)chrono::steady_clock::now().time_since_epoch().count();
+	string seedStr = input.getCmdOption("-seed");
+	if (!seedStr.empty()){
+		try {
+			base_seed = stoull(seedStr); 
+		} catch (...){
+			cerr << RED << "Invalid seed value." << WHITE << endl;
+			return 1;
+		}
+	}
+
 	__thread_rngs.resize(__num_threads);
-
-	uint64_t seed0 = (uint64_t)chrono::steady_clock::now().time_since_epoch().count();
-	std::mt19937_64 seed_rng(seed0);
-
-	__thread_rngs[0].seed(seed0);
-	for (int t = 1; t < __num_threads; t++)
-		__thread_rngs[t].seed(seed_rng());
 	
+	// Aux RNG used to seed the other threads
+	std::mt19937_64 seed_rng(base_seed);
+
+	for (int t = 0; t < __num_threads; t++)
+		__thread_rngs[t].seed(seed_rng());
+
 
 	if (input.cmdOptionExists("-preprocess")){
 		__preprocess = true;
@@ -215,12 +234,6 @@ signed main(int argc, char *argv[]){
 		}
 		bool doCount = !features.empty();
 
-		// Handle Single Feature Edge Case
-		if (features.size() == 1){
-			cerr << PURPLE << "Warning:" << WHITE << " Single feature count not supported. Duplicating feature." << endl;
-			features.push_back(features.back());
-		}
-
 		string nStr = input.getCmdOption("-sample");
 		int nPanels = 1;
 			if (!nStr.empty()) 
@@ -259,10 +272,11 @@ signed main(int argc, char *argv[]){
 			auto dp_end = std::chrono::high_resolution_clock::now();
 			std::chrono::duration<double> dp_duration = dp_end - dp_start;
 
-			
+			if (__nPanelsPrinted > nPanels)
+				return 0;
 
 			auto sampling_start = std::chrono::high_resolution_clock::now();
-			auto pan = panel.samplingAlgorithm<false, true>(dp, nPanels, -1);
+			auto pan = panel.samplingAlgorithm<false, true>(dp, nPanels - __nPanelsPrinted, -1);
 			auto sampling_end = std::chrono::high_resolution_clock::now();
 			std::chrono::duration<double> sampling_duration = sampling_end - sampling_start;
 
