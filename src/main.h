@@ -114,14 +114,10 @@ atomic<bool> __DPFinished(false);
 
 
 /** Global counter with the number of panels found. */
-long long __nPanelsPrinted = 0;
-
-
-/** @brief Default number of samples used in tests to estimate marginal probabilities. */
-const int __nSamples = 10'000;
+long long __number_of_panels_found = 0;
 
 /** @brief Flush local sampling statistics every this many tries. */
-static constexpr long long __sampling_update_tries = 100'000;
+static constexpr long long __sampling_update_tries = 200'000;
 
 /** @brief Minimum time between non-final sampling-info prints. */
 static constexpr int __sampling_update_seconds = 2;

@@ -219,11 +219,21 @@ signed main(int argc, char *argv[]){
 		Panel panel(pSz, catFile, respFile);
 
 
+
 		string tDistPath = input.getCmdOption("-tDist");
 		bool targetMarginals = !tDistPath.empty();
-		
+
+
 		bool doSample = input.cmdOptionExists("-sample");
-		
+
+
+
+
+
+
+
+
+
 		// Parse Count Features
 		vector<string> countArgs = input.getMultipleValues("-count");
 		vector<int> features;
@@ -243,7 +253,6 @@ signed main(int argc, char *argv[]){
 			cerr << RED << "ERROR:" << WHITE << " number of panels must be positive." << endl;
 			return 1;
 		}	
-
 
 
 		if (targetMarginals){
@@ -272,11 +281,11 @@ signed main(int argc, char *argv[]){
 			auto dp_end = std::chrono::high_resolution_clock::now();
 			std::chrono::duration<double> dp_duration = dp_end - dp_start;
 
-			if (__nPanelsPrinted > nPanels)
+			if (__number_of_panels_found > nPanels)
 				return 0;
 
 			auto sampling_start = std::chrono::high_resolution_clock::now();
-			auto pan = panel.samplingAlgorithm<false, true>(dp, nPanels - __nPanelsPrinted, -1);
+			auto pan = panel.samplingAlgorithm<false, true>(dp, nPanels - __number_of_panels_found, -1);
 			auto sampling_end = std::chrono::high_resolution_clock::now();
 			std::chrono::duration<double> sampling_duration = sampling_end - sampling_start;
 

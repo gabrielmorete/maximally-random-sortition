@@ -1648,8 +1648,9 @@ class Panel {
 
 
 
-		/** Next time a non-final sampling info print is allowed. */
-		chrono::steady_clock::time_point nextSamplingInfoPrint;
+		/** Next time sampling info is printed  */
+		chrono::steady_clock::time_point nextSamplingInfo;
+
 
 		/**
 		* @brief Implementation of the weighted sampling algorithm.
@@ -1728,8 +1729,7 @@ class Panel {
 				if (__verbose_mode || __test_mode) {
 					cerr << RED << "Error during sampling: " << e.what() << WHITE << endl;
 				}
-				// Return empty to signal failure
-				return {};
+				return {}; // Return empty to signal failure
 			}
 
 
@@ -1754,7 +1754,8 @@ class Panel {
 			vector< vector<int> > retPanels;
 
 
-			nextSamplingInfoPrint =
+			// Next time info should be print
+			nextSamplingInfo =
 				chrono::steady_clock::now() + chrono::seconds(__sampling_update_seconds);
 
 			#pragma omp parallel num_threads(__num_threads) \
@@ -1798,14 +1799,18 @@ class Panel {
 
 				do{
 					localTries++;
-					if (localTries % __sampling_update_tries == 0){ // update global counters periodically
+					if (localTries >= __sampling_update_tries){ // update global counters periodically
 
 						updateSamplingStatistics(localTries, localPanelsPrunned);
 
-						if (__test_mode || __panelot_output){
+						if (__test_mode){
 							#pragma omp critical
 							{
-								printSamplingInfo(dp, 0, 0);
+								auto now = chrono::steady_clock::now();
+								if (now >= nextSamplingInfo){
+									printSamplingInfo(dp, 0);
+									nextSamplingInfo = now + chrono::seconds(__sampling_update_seconds);
+								}
 							}
 						}
 
@@ -1814,9 +1819,8 @@ class Panel {
 					}
 
 
-					for (int f = 0; f < data.getTotFeature(); f++){
+					for (int f = 0; f < data.getTotFeature(); f++)
 						fill(panValues[f].begin(), panValues[f].end(), 0);
-					}
 					
 					curPos = 0;
 				
@@ -1824,7 +1828,7 @@ class Panel {
 					bool feasiblePanel = 1;
 
 					// Traverse the DP state graph to build a candidate panel.
-					while (dp->adj[ stateId ].size() and feasiblePanel and !abortSearch){
+					while (dp->adj[ stateId ].size() and feasiblePanel){
 
 						long long edgeId = getNextStateIdx(stateId, rng, dp);
 	
@@ -1837,7 +1841,7 @@ class Panel {
 
 						const auto& tupleResps = respPerTuple[tupleId];
 						int availableResps = tupleResps.size();
-						if (availableResps > 0 && f > 0) {
+						if (availableResps > 0 && f > 0){
 							iota(indices.begin(), indices.begin() + availableResps, 0);
 							
 
@@ -1917,26 +1921,24 @@ class Panel {
 					if (feasiblePanel){
 						
 						int curTotPanels = nPanelsFound.fetch_add(1, std::memory_order_relaxed);
-						if (curTotPanels < nPanels){
 
-							localPanels.push_back(panel);
-							
-							updateSamplingStatistics(localTries, localPanelsPrunned);
-
-							#pragma omp critical
-							{
-								printPanel(panel);
-								if (__panelot_output)
-									printSamplingInfo(dp, 0, 1);
+						localPanels.push_back(panel);
+						
+						#pragma omp critical
+						{
+							printPanel(panel);
+							if (__panelot_output){
+								updateSamplingStatistics(localTries, localPanelsPrunned);
+								printSamplingInfo(dp, 0);
 							}
-								
-							if (curTotPanels == nPanels - 1)
-								abortSearch = true;
 						}
+							
+						if (curTotPanels == nPanels - 1)
+							abortSearch = true;
+					
 					}
 						
 				} while (!abortSearch);
-			
 
 				/**
 					Merge all satisfcation probabilities measures
@@ -1961,7 +1963,7 @@ class Panel {
 
 
 			if (__test_mode)
-				printSamplingInfo(dp, 1, 1);
+				printSamplingInfo(dp, 1);
 
 			return retPanels;
 		}
@@ -2053,20 +2055,24 @@ class Panel {
 
 
 		void printSelectionProbTable(const string& title,
-							const vector<int>* activeFeat = nullptr) const {
+			const long double avgTries,
+			const vector<int>* activeFeat = nullptr) const {
 
 			const int m = data.getTotFeature();
 
 			cerr << YELLOW << "\n--- " << title << " ---" << WHITE << endl;
 			cerr << YELLOW << "Tries: " << WHITE << __number_of_tries << endl;
+			cerr << YELLOW << "Avg tries/panel: " << WHITE << (double)avgTries << endl;
+
 
 			vector<char> isActive(m, 0);
-			if (activeFeat) {
-				for (int f : *activeFeat) isActive[f] = 1;
-			}
+			if (activeFeat)
+				for (int f : *activeFeat) 
+					isActive[f] = 1;
 
 			int maxV = 0;
-			for (int f = 0; f < m; f++) maxV = max(maxV, data.getFeatSize()[f]);
+			for (int f = 0; f < m; f++) 
+				maxV = max(maxV, data.getFeatSize()[f]);
 
 			const int colW = 8;
 
@@ -2343,7 +2349,7 @@ class Panel {
 			// Obtain feature hardness estimates
 			runUniformDiagnostics(1'000'000);
 			if (__verbose_mode) 
-				printSelectionProbTable("k-uniform Satisf Prob");
+				printSelectionProbTable("k-uniform Satisf Prob", -1);
 
 			if (__preprocess) {
 				createValueMaps(activeFeat, valueMaps, data, __preprocess_theshold);
@@ -2374,34 +2380,31 @@ class Panel {
 
 				if (lastSuccessfulDP != nullptr) {
 					// Feature prediction and early drop
-					const long diagPanels = 10;
-					const long long diagMaxSamples = 100'000;
-					const long double easyAvgTries = 10'000.0L;  // max tries per panel
+					const int diagPanels = 10; // number of panels to test
+					const long long diagMaxSamples = 100'000; // Maximum number of tries
+					const long double avgThreshold = 1L;  // max average tries per panel
 
 					if (__test_mode)
 						cerr << BLUE << "Computing current satisfaction probabilities." << WHITE << endl;
 
-					auto panels = samplingAlgorithm<false, false>(lastSuccessfulDP, diagPanels, diagMaxSamples);
 
-					// if (__test_mode)
-					// 	cerr << BLUE << "Number of successful samples: " << WHITE << panels.size() << endl;
+					auto panels = samplingAlgorithm<false, false>(lastSuccessfulDP, diagPanels, diagMaxSamples);
+					
+					// Check average tries per panel
+
+					long long nPan = panels.size();
+					long double avgTries = ((long double)__number_of_tries) / nPan;
+
 
 					if (__verbose_mode)
-						printSelectionProbTable("Current Satisfaction Probabilities", &activeFeat);
+						printSelectionProbTable("Current Satisfaction Probabilities", avgTries, &activeFeat);
 
-					// Early stop, if we can sample, lets sample
-					if ((long)panels.size() == diagPanels){
-						long double avgTries = (long double)__number_of_tries / (long double)diagPanels;
-						if (__verbose_mode) {
-							cerr << YELLOW << "Diagnostics avg tries/panel: " << WHITE
-								 << (double)avgTries << endl;
-						}
-						if (avgTries <= easyAvgTries){
-							if (__verbose_mode)
-								cerr << YELLOW << "Sampling is already easy; stopping DP growth." << WHITE << endl;
-							break;
-						}
-					}
+					// Early stop, if we can sample, lets sample						
+					if (avgTries <= avgThreshold){
+						if (__verbose_mode)
+							cerr << YELLOW << "Sampling is already easy; stopping DP growth." << WHITE << endl;
+						break;
+					}	
 				}		
 
 
@@ -2579,7 +2582,7 @@ class Panel {
 		 */
 
 		void printPanel(vector<int> &panel){
-			__nPanelsPrinted++;
+			__number_of_panels_found++;
 			sort(panel.begin(), panel.end());
 
 			ostream &out = __panelot_output ? cerr : cout;
@@ -2600,20 +2603,11 @@ class Panel {
 		 * sequentially displays the survival probability (in scientific notation) 
 		 * and estimated valid panels as each remaining feature is applied.
 		 */
-		void printSamplingInfo(const shared_ptr<CountSets> &dp, bool final, bool force){
+		void printSamplingInfo(const shared_ptr<CountSets> &dp, bool final){
 			if (__number_of_tries <= 0) // Should not happen
 				return;
 
-			if (!final && !force){
-				auto now = chrono::steady_clock::now();
-				if (now < nextSamplingInfoPrint)
-					return;
-
-				nextSamplingInfoPrint =
-					now + chrono::seconds(__sampling_update_seconds);
-			}
-
-			double survivalRate = ((double)__nPanelsPrinted / __number_of_tries) * 100.0;
+			double survivalRate = ((double)__number_of_panels_found / __number_of_tries) * 100.0;
 					
 			ios_base::fmtflags f(cerr.flags());
 
@@ -2622,7 +2616,7 @@ class Panel {
 			else	
 				cerr << BLUE << "\n--- Rejaction Sampling Info ---" << WHITE << endl;
 			
-			cerr << BLUE << "current # of panels: " << WHITE << __nPanelsPrinted 
+			cerr << BLUE << "current # of panels: " << WHITE << __number_of_panels_found 
 				 << " (" << scientific << setprecision(2) << survivalRate << "%)" << endl;
 			cerr.flags(f);
 
@@ -2730,6 +2724,11 @@ class Panel {
 				cerr << setw(colW) << right << ss.str() << " |";
 			}
 			cerr << endl;
+		}
+
+		/** @brief Gets the respondents feature vectors (read-only). */
+		inline const vector<FeatVec>& getRespondents() const {
+			return data.getRespondents();
 		}
 
 		/** @brief Gets the total number of respondents loaded. */
